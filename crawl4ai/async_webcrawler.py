@@ -7,7 +7,6 @@ from typing import Optional, List
 import json
 import asyncio
 
-# from contextlib import nullcontext, asynccontextmanager
 from contextlib import asynccontextmanager
 from .models import (
     CrawlResult,
@@ -17,11 +16,7 @@ from .models import (
     CrawlResultContainer,
     RunManyReturn
 )
-from .async_database import async_db_manager
-from .chunking_strategy import *  # noqa: F403
 from .chunking_strategy import IdentityChunking
-from .content_filter_strategy import *  # noqa: F403
-from .extraction_strategy import *  # noqa: F403
 from .extraction_strategy import NoExtractionStrategy
 from .async_crawler_strategy import (
     AsyncCrawlerStrategy,
@@ -36,7 +31,6 @@ from .markdown_generation_strategy import (
 from .deep_crawling import DeepCrawlDecorator
 from .async_logger import AsyncLogger, AsyncLoggerBase
 from .async_configs import BrowserConfig, CrawlerRunConfig, ProxyConfig
-from .async_dispatcher import *  # noqa: F403
 from .async_dispatcher import BaseDispatcher, MemoryAdaptiveDispatcher, RateLimiter
 
 from .utils import (
@@ -111,9 +105,11 @@ class AsyncWebCrawler:
         crawler_strategy: AsyncCrawlerStrategy = None,
         config: BrowserConfig = None,
         base_directory: str = str(
-            os.getenv("CRAWL4_AI_BASE_DIRECTORY", Path.home())),
+            os.getenv("CRAWL4_AI_BASE_DIRECTORY", Path.home())
+        ),
         thread_safe: bool = False,
         logger: AsyncLoggerBase = None,
+        db_manager=None,  # Add db_manager parameter
         **kwargs,
     ):
         """
@@ -124,31 +120,29 @@ class AsyncWebCrawler:
             config: Configuration object for browser settings. Default BrowserConfig()
             base_directory: Base directory for storing cache
             thread_safe: Whether to use thread-safe operations
+            db_manager: A database manager instance. If None, a default SQLite manager will be created on demand.
             **kwargs: Additional arguments for backwards compatibility
         """
         # Handle browser configuration
-        browser_config = config or BrowserConfig()
-
-        self.browser_config = browser_config
+        self.config = config or BrowserConfig()
+        self.db_manager = db_manager  # Store the provided db_manager
+        self._db_manager_instance = db_manager  # Internal instance
+        self._base_directory = base_directory  # Store base_directory for lazy init
 
         # Initialize logger first since other components may need it
         self.logger = logger or AsyncLogger(
             log_file=os.path.join(base_directory, ".crawl4ai", "crawler.log"),
-            verbose=self.browser_config.verbose,
-            tag_width=10,
+            verbose=self.config.verbose,
         )
 
         # Initialize crawler strategy
-        params = {k: v for k, v in kwargs.items() if k in [
-            "browser_config", "logger"]}
         self.crawler_strategy = crawler_strategy or AsyncPlaywrightCrawlerStrategy(
-            browser_config=browser_config,
-            logger=self.logger,
-            **params,  # Pass remaining kwargs for backwards compatibility
+            browser_config=self.config, logger=self.logger
         )
 
         # Thread safety setup
-        self._lock = asyncio.Lock() if thread_safe else None
+        self.thread_safe = thread_safe
+        self.lock = asyncio.Lock() if thread_safe else None
 
         # Initialize directories
         self.crawl4ai_folder = os.path.join(base_directory, ".crawl4ai")
@@ -163,6 +157,16 @@ class AsyncWebCrawler:
         # Decorate arun method with deep crawling capabilities
         self._deep_handler = DeepCrawlDecorator(self)
         self.arun = self._deep_handler(self.arun)
+
+    async def _get_db_manager(self):
+        """
+        Lazily initializes and returns the database manager.
+        """
+        if self._db_manager_instance is None:
+            from .async_database import AsyncDatabaseManager
+            self._db_manager_instance = AsyncDatabaseManager()
+            await self._db_manager_instance.initialize()
+        return self._db_manager_instance
 
     async def start(self):
         """
@@ -232,16 +236,18 @@ class AsyncWebCrawler:
         Returns:
             CrawlResult: The result of crawling and processing
         """
-        # Auto-start if not ready
         if not self.ready:
             await self.start()
+        
+        # Lazily get the db_manager instance
+        self.db_manager = await self._get_db_manager()
 
         config = config or CrawlerRunConfig()
         if not isinstance(url, str) or not url:
             raise ValueError(
                 "Invalid URL, make sure the URL is a non-empty string")
 
-        async with self._lock or self.nullcontext():
+        async with self.lock or self.nullcontext():
             try:
                 self.logger.verbose = config.verbose
 
@@ -262,7 +268,7 @@ class AsyncWebCrawler:
 
                 # Try to get cached result if appropriate
                 if cache_context.should_read():
-                    cached_result = await async_db_manager.aget_cached_url(url)
+                    cached_result = await self.db_manager.aget_cached_url(url)
 
                 if cached_result:
                     html = sanitize_input_encode(cached_result.html)
@@ -314,7 +320,7 @@ class AsyncWebCrawler:
                     # Check robots.txt if enabled
                     if config and config.check_robots_txt:
                         if not await self.robots_parser.can_fetch(
-                            url, self.browser_config.user_agent
+                            url, self.config.user_agent
                         ):
                             return CrawlResult(
                                 url=url,
@@ -388,7 +394,7 @@ class AsyncWebCrawler:
 
                     # Update cache if appropriate
                     if cache_context.should_write() and not bool(cached_result):
-                        await async_db_manager.acache_url(crawl_result)
+                        await self.db_manager.acache_url(crawl_result)
 
                     return CrawlResultContainer(crawl_result)
 
@@ -426,6 +432,10 @@ class AsyncWebCrawler:
                         url=url, html="", success=False, error_message=error_message
                     )
                 )
+            finally:
+                self._domain_last_hit[url] = time.time()
+                if self.thread_safe:
+                    self.lock.release()
 
     async def aprocess_html(
         self,

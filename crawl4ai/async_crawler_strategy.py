@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from types import MappingProxyType
 import contextlib
 from functools import partial
+from playwright_stealth import stealth_async
 
 class AsyncCrawlerStrategy(ABC):
     """
@@ -40,6 +41,18 @@ class AsyncCrawlerStrategy(ABC):
     @abstractmethod
     async def crawl(self, url: str, **kwargs) -> AsyncCrawlResponse:
         pass  # 4 + 3
+
+    @abstractmethod
+    async def __aenter__(self):
+        pass
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    @abstractmethod
+    async def arun(self, url: str):
+        pass
 
 class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
     """
@@ -69,6 +82,13 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                 Run the crawler for a single URL.
 
     """
+
+    async def arun(self, url: str):
+        """
+        Dummy implementation to satisfy abstract base class.
+        The actual logic is in the 'crawl' method.
+        """
+        pass
 
     def __init__(
         self, browser_config: BrowserConfig = None, logger: AsyncLogger = None, **kwargs

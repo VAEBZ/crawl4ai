@@ -1,0 +1,166 @@
+version: '3.8'
+
+services:
+  # DynamoDB Local - The document store that will outlive us all
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: crawl4ai-dynamodb
+    ports:
+      - "8900:8000"
+    command: [
+      "-jar", "DynamoDBLocal.jar", 
+      "-sharedDb", 
+      "-dbPath", "./data",
+      "-port", "8000"
+    ]
+    volumes:
+      - dynamodb_data:/home/dynamodblocal/data
+    networks:
+      - crawl4ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # DynamoDB Admin UI - For when you need to witness the data chaos visually
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:latest
+    container_name: crawl4ai-dynamodb-admin
+    ports:
+      - "8901:8001"
+    environment:
+      - DYNAMO_ENDPOINT=http://dynamodb-local:8000
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=dummy
+      - AWS_SECRET_ACCESS_KEY=dummy
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - crawl4ai-network
+
+  # Redis - For caching the inevitable disappointments
+  redis:
+    image: redis:7-alpine
+    container_name: crawl4ai-redis
+    ports:
+      - "6389:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - crawl4ai-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Crawl4AI Server - The main protagonist in this cosmic drama
+  crawl4ai-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - FEATURES=${FEATURES:-base}
+    container_name: crawl4ai-server
+    ports:
+      - "11245:11235"
+    environment:
+      # DynamoDB Configuration
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=dummy
+      - AWS_SECRET_ACCESS_KEY=dummy
+      - DYNAMODB_TABLE_CRAWL_RESULTS=crawl4ai-results
+      - DYNAMODB_TABLE_SESSIONS=crawl4ai-sessions
+      
+      # Redis Configuration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      
+      # Application Configuration
+      - CRAWL4_AI_BASE_DIRECTORY=/app/.crawl4ai
+      - LOG_LEVEL=INFO
+      - MCP_ENABLED=true
+      
+      # Server Configuration
+      - HOST=0.0.0.0
+      - PORT=11235
+      - WORKERS=1
+      
+    volumes:
+      - crawl4ai_data:/app/.crawl4ai
+      - ./crawl4ai:/app/crawl4ai:ro
+      - ./deploy:/app/deploy:ro
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - crawl4ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11235/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # DynamoDB Table Initializer - Sets up the schemas we'll inevitably regret
+  dynamodb-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.dynamodb-init
+    container_name: crawl4ai-dynamodb-init
+    environment:
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=dummy
+      - AWS_SECRET_ACCESS_KEY=dummy
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - crawl4ai-network
+    restart: "no"
+
+  # LocalStack - For when you want the full AWS experience locally
+  localstack:
+    image: localstack/localstack:latest
+    container_name: crawl4ai-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,lambda,iam
+      - DEBUG=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=dummy
+      - AWS_SECRET_ACCESS_KEY=dummy
+    volumes:
+      - localstack_data:/tmp/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - crawl4ai-network
+    profiles:
+      - localstack
+
+volumes:
+  dynamodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  crawl4ai_data:
+    driver: local
+  localstack_data:
+    driver: local
+
+networks:
+  crawl4ai-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.40.0.0/16 

@@ -2,7 +2,14 @@
 import warnings
 
 from .async_webcrawler import AsyncWebCrawler, CacheMode
-from .async_configs import BrowserConfig, CrawlerRunConfig, HTTPCrawlerConfig, LLMConfig, ProxyConfig, GeolocationConfig
+from .async_configs import (
+    BrowserConfig,
+    CrawlerRunConfig,
+    HTTPCrawlerConfig,
+    LLMConfig,
+    ProxyConfig,
+    GeolocationConfig,
+)
 
 from .content_scraping_strategy import (
     ContentScrapingStrategy,
@@ -24,7 +31,7 @@ from .extraction_strategy import (
     JsonCssExtractionStrategy,
     JsonXPathExtractionStrategy,
     JsonLxmlExtractionStrategy,
-    RegexExtractionStrategy
+    RegexExtractionStrategy,
 )
 from .chunking_strategy import ChunkingStrategy, RegexChunking
 from .markdown_generation_strategy import DefaultMarkdownGenerator
@@ -65,6 +72,16 @@ from .deep_crawling import (
     DFSDeepCrawlStrategy,
     DeepCrawlDecorator,
 )
+
+# Enhanced crawler with pluggable backends
+from .enhanced_crawler import (
+    EnhancedAsyncWebCrawler,
+    create_dynamodb_crawler,
+    create_mem0_crawler,
+)
+
+# Backend system
+from .backends import BackendType
 
 __all__ = [
     "AsyncLoggerBase",
@@ -124,7 +141,12 @@ __all__ = [
     "Crawl4aiDockerClient",
     "ProxyRotationStrategy",
     "RoundRobinProxyStrategy",
-    "ProxyConfig"
+    "ProxyConfig",
+    # Enhanced crawler exports
+    "EnhancedAsyncWebCrawler",
+    "create_dynamodb_crawler",
+    "create_mem0_crawler",
+    "BackendType",
 ]
 
 

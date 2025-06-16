@@ -1,27 +1,40 @@
 import os
 from pathlib import Path
-import aiosqlite
 import asyncio
 from typing import Optional, Dict
 from contextlib import asynccontextmanager
-import json  
+import json
+
+try:
+    import aiosqlite
+except ImportError:
+    aiosqlite = None
+
+try:
+    import aiofiles
+except ImportError:
+    aiofiles = None
+
 from .models import CrawlResult, MarkdownGenerationResult, StringCompatibleMarkdown
-import aiofiles
 from .async_logger import AsyncLogger
 
-from .utils import ensure_content_dirs, generate_content_hash
+from .utils import ensure_content_dirs, generate_content_hash, get_error_context
 from .utils import VersionManager
-from .utils import get_error_context, create_box_message
 
-base_directory = DB_PATH = os.path.join(
+base_directory = os.path.join(
     os.getenv("CRAWL4_AI_BASE_DIRECTORY", Path.home()), ".crawl4ai"
 )
-os.makedirs(DB_PATH, exist_ok=True)
+os.makedirs(base_directory, exist_ok=True)
 DB_PATH = os.path.join(base_directory, "crawl4ai.db")
 
 
 class AsyncDatabaseManager:
     def __init__(self, pool_size: int = 10, max_retries: int = 3):
+        if aiosqlite is None or aiofiles is None:
+            raise ImportError(
+                "To use the default SQLite cache, please install the "
+                "necessary dependencies: 'pip install aiosqlite aiofiles'"
+            )
         self.db_path = DB_PATH
         self.content_paths = ensure_content_dirs(os.path.dirname(DB_PATH))
         self.pool_size = pool_size
@@ -111,7 +124,10 @@ class AsyncDatabaseManager:
 
                         error_context = get_error_context(sys.exc_info())
                         self.logger.error(
-                            message="Database initialization failed:\n{error}\n\nContext:\n{context}\n\nTraceback:\n{traceback}",
+                            message=(
+                                "Database initialization failed:\n{error}\n\n"
+                                "Context:\n{context}\n\nTraceback:\n{traceback}"
+                            ),
                             tag="ERROR",
                             force_verbose=True,
                             params={
@@ -153,10 +169,13 @@ class AsyncDatabaseManager:
                                 "response_headers",
                                 "downloaded_files",
                             }
-                            missing_columns = expected_columns - set(column_names)
+                            missing_columns = expected_columns - set(
+                                column_names
+                            )
                             if missing_columns:
                                 raise ValueError(
-                                    f"Database missing columns: {missing_columns}"
+                                    "Database missing columns: "
+                                    f"{missing_columns}"
                                 )
 
                         self.connection_pool[task_id] = conn
@@ -165,8 +184,10 @@ class AsyncDatabaseManager:
 
                         error_context = get_error_context(sys.exc_info())
                         error_message = (
-                            f"Unexpected error in db get_connection at line {error_context['line_no']} "
-                            f"in {error_context['function']} ({error_context['filename']}):\n"
+                            f"Unexpected error in db get_connection at line "
+                            f"{error_context['line_no']} "
+                            f"in {error_context['function']} "
+                            f"({error_context['filename']}):\n"
                             f"Error: {str(e)}\n\n"
                             f"Code context:\n{error_context['code_context']}"
                         )
@@ -186,8 +207,10 @@ class AsyncDatabaseManager:
 
             error_context = get_error_context(sys.exc_info())
             error_message = (
-                f"Unexpected error in db get_connection at line {error_context['line_no']} "
-                f"in {error_context['function']} ({error_context['filename']}):\n"
+                f"Unexpected error in db get_connection at line "
+                f"{error_context['line_no']} "
+                f"in {error_context['function']} "
+                f"({error_context['filename']}):\n"
                 f"Error: {str(e)}\n\n"
                 f"Code context:\n{error_context['code_context']}"
             )
@@ -559,6 +582,39 @@ class AsyncDatabaseManager:
             )
             return None
 
+    async def get_all_urls(self) -> list[str]:
+        async with self.get_connection() as conn:
+            cursor = await conn.execute("SELECT url FROM http_cache")
+            return [row[0] for row in await cursor.fetchall()]
+
+    async def close(self):
+        """Dummy method to match the interface of other database managers."""
+        pass
+
 
 # Create a singleton instance
 async_db_manager = AsyncDatabaseManager()
+
+# Hybrid Database Manager Support
+# Enable DynamoDB integration by setting environment variables:
+# DYNAMODB_ENDPOINT=http://localhost:8000 (for local development)
+# DYNAMODB_MIGRATION_PCT=10 (route 10% of traffic to DynamoDB)
+# FORCE_DYNAMODB=true (force all traffic to DynamoDB)
+
+try:
+    from .hybrid_database_manager import HybridDatabaseManager
+    
+    # Check if DynamoDB integration is enabled
+    if (os.getenv('DYNAMODB_ENDPOINT') or 
+        os.getenv('FORCE_DYNAMODB', '').lower() == 'true' or
+        int(os.getenv('DYNAMODB_MIGRATION_PCT', '0')) > 0):
+        
+        # Replace the singleton with hybrid manager
+        hybrid_db_manager = HybridDatabaseManager()
+        
+        # Provide both for backward compatibility
+        async_db_manager = hybrid_db_manager
+        
+except ImportError:
+    # DynamoDB dependencies not available, stick with SQLite
+    pass
